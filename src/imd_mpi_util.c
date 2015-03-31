@@ -209,10 +209,12 @@ void init_io(void)
 
   /* output parameters */
   if (parallel_output==1) {
-    n_out_grps = num_cpus;
-    my_out_grp = myid;
-    my_out_id  = myid;
-    out_grp_size = 1;
+    n_out_grps = num_cpus/outputgrpsize;
+    if (num_cpus%outputgrpsize != 0)
+      n_out_grps++;
+    my_out_grp = (int) (myid/outputgrpsize);
+    my_out_id  = (int) (myid/outputgrpsize)*outputgrpsize;
+    out_grp_size = outputgrpsize;
   }
   else {
     n_out_grps   = 1;
@@ -389,7 +391,7 @@ void copy_atom_cell_buf(msgbuf *to, int to_cpu, cell *p, int ind )
 #ifdef VARCHG
   to->data[ to->n++ ] = CHARGE(p,ind);
 #endif
-#ifdef DIPOLE 
+#if defined(DIPOLE) || defined(KERMODE) 
   /* dp_E_stat, dp_E_ind and dp_p_stat are not sent */
 /*   to->data[ to->n++ ] = DP_P_STAT(p,ind,X); */
 /*   to->data[ to->n++ ] = DP_P_STAT(p,ind,Y); */
@@ -607,7 +609,7 @@ void copy_atom_buf_cell(minicell *p, msgbuf *b, int start)
 #ifdef VARCHG
   CHARGE(to,ind)     = b->data[j++];
 #endif
-#ifdef DIPOLE
+#if defined(DIPOLE) || defined(KERMODE)
   /* don't send p_stat, E_stat, E_ind */
   DP_P_IND(to,ind,X) = b->data[j++];
   DP_P_IND(to,ind,Y) = b->data[j++];
@@ -727,13 +729,28 @@ void process_buffer(msgbuf *b)
   ivektor coord;
 
   for (i=0; i<b->n; i+=atom_size) {
+#ifdef LOADBALANCE
+#ifdef DEBUG
+	  if (myid != (int) (b->data[i] + 0.1))
+		  error("LB: received an atom not targeted to this CPU");
+#endif
+#else
     if (myid != (int) (b->data[i] + 0.1)) continue;
+#endif
 #ifdef TWOD
     coord = cell_coord( b->data[i+1], b->data[i+2] );
 #else
     coord = cell_coord( b->data[i+1], b->data[i+2], b->data[i+3] );
 #endif
     coord = local_cell_coord( coord );
+#if defined(LOADBALANCE) && defined(DEBUG)
+    if (coord.x < 0 || coord.x >= cell_dim.x ||
+        coord.y < 0 || coord.y >= cell_dim.y ||
+        coord.z < 0 || coord.z >= cell_dim.z ||
+        (PTR_VV(cell_array,coord,cell_dim))->lb_cell_type != LB_REAL_CELL) {
+    		error("LB: Cannot copy atoms to non real cell");
+    }
+#endif
     to = PTR_VV(cell_array, coord, cell_dim);
     copy_atom_buf_cell(to, b, i);
   }
@@ -825,7 +842,7 @@ void setup_buffers(void)
 #endif
 #endif /* EAM2 */
     /* communication of induced dipoles etc */
-#ifdef DIPOLE
+#if defined(DIPOLE) || defined(KERMODE)
     binc4 = 4*DIM; 		/* 4 vector fields */
 #endif
 
@@ -838,7 +855,7 @@ void setup_buffers(void)
 #ifdef EAM2
     binc=MAX(binc,binc3);
 #endif
-#ifdef DIPOLE
+#if defined(DIPOLE) || defined(KERMODE)
     binc=MAX(binc,binc4);
 #endif
 #ifdef NYETENSOR
@@ -879,6 +896,8 @@ void setup_buffers(void)
 #endif
 #endif
 
+#ifndef LOADBALANCE
+
   /* Allocate east/west buffers */
   if (size_east > send_buf_east.n_max) {
     alloc_msgbuf(&send_buf_east, size_east);
@@ -903,7 +922,33 @@ void setup_buffers(void)
     alloc_msgbuf(&recv_buf_up,   size_up);
     alloc_msgbuf(&recv_buf_down, size_up);
   }
+#endif
+#else /*LOADBALANCE*/
+  /*Alloc buffer for direct communication*/
+  /*Adjust the send/receive buffers*/
+  lb_largest_cell = largest_cell;
 
+  for (k = 0; k < lb_nAllocatedCommBuffers; k++){
+	  free_msgbuf(&lb_send_buf[k]);
+	  free_msgbuf(&lb_recv_buf[k]);
+  }
+  lb_nAllocatedCommBuffers = lb_nTotalComms;
+
+  memalloc(&lb_send_buf, lb_nTotalComms, sizeof(msgbuf), sizeof(void*), 0, 1, "lb_send_buf");
+  memalloc(&lb_recv_buf, lb_nTotalComms, sizeof(msgbuf), sizeof(void*), 0, 1, "lb_revc_buf");
+
+  lb_req_recv = realloc(lb_req_recv, lb_nTotalComms*sizeof(MPI_Request));
+  lb_req_send = realloc(lb_req_send, lb_nTotalComms*sizeof(MPI_Request));
+
+  lb_requests = realloc(lb_requests, 2*lb_nTotalComms*sizeof *lb_requests);
+  lb_request_indices = realloc(lb_request_indices, 2*lb_nTotalComms*sizeof *lb_request_indices);
+
+  for (k = 0; k < lb_nTotalComms; ++k) {
+  	int maxcells = MAX(lb_nSendCells[k],lb_nSendForces[k]);
+  	int bufsize = MAX(maxcells*largest_cell*(MAX(atom_size,binc)+3), 10000);
+  	alloc_msgbuf(&lb_send_buf[k], (int)(bufsize*1.2));
+  	alloc_msgbuf(&lb_recv_buf[k], (int)(bufsize*1.2));
+  }
 #endif
 
 #ifdef SHOCK
@@ -922,6 +967,13 @@ void setup_buffers(void)
 
 void empty_mpi_buffers(void)
 {
+#ifdef LOADBALANCE
+  int i;
+  for (i=0;i<lb_nTotalComms;i++){
+	  lb_send_buf[i].n = 0;
+	  lb_recv_buf[i].n = 0;
+  }
+#else
   /* Empty MPI buffers */
   send_buf_north.n = 0;
   send_buf_south.n = 0;
@@ -940,6 +992,7 @@ void empty_mpi_buffers(void)
   send_buf_up.n    = 0;
 #endif
 
+#endif
 }
 
 #ifdef AFF

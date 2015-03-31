@@ -83,7 +83,7 @@
 #endif
 
 /* VARCHG and DIPOLE require COULOMB */
-#if (defined(VARCHG) || defined(DIPOLE))
+#if (defined(VARCHG) || defined(DIPOLE) || defined(KERMODE))
 #ifndef COULOMB
 #define COULOMB
 #endif
@@ -100,7 +100,7 @@
 #endif
 
 /* default short-range potential for DIPOLE is MORSE */
-#if (defined(DIPOLE) && !defined(BUCK))
+#if ((defined(DIPOLE) || defined(KERMODE)) && !defined(BUCK))
 #define MORSE
 #endif
 
@@ -145,7 +145,7 @@
 #define AR
 #endif
 
-#ifdef AR
+#if defined(AR) && !defined(LOADBALANCE)
 #  define NNBCELL 14
 #else
 #  define NNBCELL 27

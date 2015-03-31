@@ -84,7 +84,11 @@ int main(int argc, char **argv)
 
   /* read parameters for first simulation phase */
   finished = read_parameters(paramfilename, simulation);
-
+#ifdef KERMODE
+  ke_r2cut=ew_r2_cut;
+  ke_tot_rcut = (ke_rcut+yuk_smoothlength); /* kermode total coulomb and dipole cut off */
+  ke_tot_r2cut= SQR(ke_tot_rcut);
+#endif
 
   /* initialize all potentials */
   setup_potentials();
@@ -229,6 +233,33 @@ int main(int argc, char **argv)
   init_sm();
 #endif
 
+#ifdef LOADBALANCE
+  lb_computeVariance();
+  if (myid == 0 && (0==myrank)){
+	printf("LOAD BALANCING: Initial max_load %f\n", lb_maxLoad);
+	printf("LOAD BALANCING: Initial min_load %f\n", lb_minLoad);
+	printf("LOAD BALANCING: Initial variance %f\n",  lb_loadVariance);
+  }
+
+  if (lb_preRuns > 0){
+	  fix_cells();
+	  setup_buffers();
+	  for (i=0; i<lb_preRuns;i++){
+		  int success = balanceLoad(lb_getLoad, lb_getCenterOfGravity, 0, 0);
+		  lb_computeVariance();
+		  write_lb_file(-lb_preRuns+i, 1);
+		  if (!success) break;
+	  }
+	  if (lb_writeStatus)
+	  	  	write_lb_status(0);
+	  if (myid == 0 && (0==myrank)){
+	  	printf("LOAD BALANCING: After initial runs max_load %f\n", lb_maxLoad);
+	  	printf("LOAD BALANCING: After initial runs min_load %f\n", lb_minLoad);
+	  	printf("LOAD BALANCING: After initial runs variance %f\n", lb_loadVariance);
+	  }
+  }
+#endif
+
   imd_stop_timer(&time_setup);
 
   /* first phase of the simulation */
@@ -264,6 +295,9 @@ int main(int argc, char **argv)
     if (NULL!= eng_file) fclose( eng_file);
 #ifdef EXTPOT
     if (NULL!= ind_file) fclose( ind_file);
+#endif
+#ifdef LOADBALANCE
+    if (NULL!= lblog_file) fclose(lblog_file);
 #endif
 #ifdef RELAX
     if (NULL!= ssdef_file) fclose( ssdef_file);

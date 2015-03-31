@@ -375,7 +375,7 @@ void read_atoms(str255 infilename)
 #ifndef TWOD
       KRAFT(input,0,Z) = 0;
 #endif
-#ifdef DIPOLE 			/* only 3D */
+#if defined(DIPOLE) || defined(KERMODE) 		/* only 3D */
       DP_P_IND(input,0,X) = d[count++];
       DP_P_IND(input,0,Y) = d[count++];
       DP_P_IND(input,0,Z) = d[count++];
@@ -562,6 +562,10 @@ void read_atoms_cleanup(void)
     }
 #ifdef MPI
     MPI_Bcast( num_ssort, nsuperatoms, MPI_LONG, 0, MPI_COMM_WORLD);
+    if (!parallel_input){
+      	// distribute masses of superatoms if input is not read in parallel
+     	MPI_Bcast( supermass, nsuperatoms, REAL, 0 , MPI_COMM_WORLD);
+    }
 #endif
 
     if (0==myid) {
@@ -817,6 +821,10 @@ void write_atoms_config(FILE *out)
 	  data[n++].r = (real) crist;
 	}
 #endif
+#ifdef LOADBALANCE
+	if (lb_writeStatus)
+	  data[n++].r = (real) myid;
+#endif
         len += n * sizeof(i_or_r);
       }
       else {
@@ -883,7 +891,7 @@ void write_atoms_config(FILE *out)
         len += sprintf(outbuf+len, RESOL1, EAM_P(p,i));
 #endif
 #endif
-#ifdef DIPOLE
+#if defined(DIPOLE) || defined(KERMODE)
 	len += sprintf(outbuf+len, RESOL3, 
 		       DP_P_IND(p,i,X), DP_P_IND(p,i,Y), DP_P_IND(p,i,Z)); 
 #endif	/* DIPOLE */
@@ -905,6 +913,10 @@ void write_atoms_config(FILE *out)
 #ifdef CNA
 	if (cna_crist>0) 
 	  len += sprintf(outbuf+len, " %d", crist);
+#endif
+#ifdef LOADBALANCE
+	if (lb_writeStatus)
+		len += sprintf(outbuf+len, " %i", myid);
 #endif
         len += sprintf(outbuf+len,"\n");
       }
